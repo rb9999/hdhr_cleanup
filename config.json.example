@@ -1,0 +1,9 @@
+{
+  "dvr_ip": "192.168.1.100:59090",
+  "default_episodes": 5,
+  "poll_interval_minutes": 60,
+  "show_overrides": {
+    "Example Show 1": 3,
+    "Example Show 2": 7
+  }
+}
