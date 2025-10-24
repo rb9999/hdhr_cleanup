@@ -36,7 +36,12 @@ env/
 *.swp
 *.swo
 *~
+.claude
+.CLAUDE.md
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Docker working files
+docker/
