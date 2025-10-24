@@ -6,12 +6,37 @@ Automatically manage your HDHomeRun DVR recordings by keeping only the newest N 
 
 - **Per-Show Retention Policies**: Set different episode limits for each show
 - **Automatic Cleanup**: Run continuously or on-demand
+- **Discord Notifications**: Get real-time status updates via Discord webhooks (NEW in v2.0)
 - **Flexible Configuration**: JSON config file with environment variable support
 - **Multiple Execution Modes**: One-time, targeted, or continuous monitoring
 - **Safe Deletion**: Only deletes oldest episodes, always keeps the newest
 - **Detailed Logging**: Track what's being deleted and why
 
 ## Quick Start
+
+### Option 1: Docker (Recommended)
+
+The easiest way to run this tool is with Docker. See the [docker/README.md](docker/README.md) for full instructions.
+
+```bash
+# Clone and setup
+git clone https://github.com/rb9999/hdhr_cleanup.git
+cd hdhr_cleanup
+cp .env.example .env
+cp config.json.example config.json
+
+# Edit config files
+nano .env           # Set your DVR_IP
+nano config.json    # Set your show retention
+
+# Run with Docker
+cd docker
+./run.sh once       # One-time cleanup
+./run.sh continuous # Continuous monitoring
+./run.sh list       # List shows
+```
+
+### Option 2: Python Installation
 
 ### 1. Installation
 
@@ -58,9 +83,10 @@ cp .env.example .env
 cp config.json.example config.json
 ```
 
-**Edit `.env`** and set your DVR IP:
+**Edit `.env`** and set your DVR IP (and optionally Discord webhook):
 ```
 DVR_IP=192.168.1.100:59090
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
 ```
 
 **Edit `config.json`** to set your retention policies:
@@ -169,6 +195,12 @@ This mode runs forever until stopped (Ctrl+C).
   "poll_interval_minutes": 60,
   "show_overrides": {
     "Show Name": episodes_to_keep
+  },
+  "discord": {
+    "enabled": false,
+    "notify_on_cleanup": true,
+    "notify_on_startup": true,
+    "notify_on_error": true
   }
 }
 ```
@@ -178,6 +210,7 @@ This mode runs forever until stopped (Ctrl+C).
 - `default_episodes`: Default number of episodes to keep for all shows
 - `poll_interval_minutes`: How often to check for cleanup in continuous mode
 - `show_overrides`: Per-show episode limits (must match exact show name)
+- `discord`: Discord notification settings (see Discord Notifications section below)
 
 **Special Values:**
 - Set a show to `0` to delete ALL recordings of that show
@@ -185,16 +218,57 @@ This mode runs forever until stopped (Ctrl+C).
 
 ### Environment Variables (.env)
 
-Store sensitive information like your DVR IP in `.env`:
+Store sensitive information like your DVR IP and Discord webhook in `.env`:
 
 ```
 DVR_IP=192.168.1.100:59090
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
 ```
 
 **Priority order:**
 1. `DVR_IP` environment variable (`.env` file)
 2. `dvr_ip` in `config.json`
 3. Built-in default
+
+### Discord Notifications
+
+Get real-time status updates sent to your Discord channel via webhooks.
+
+**Setup:**
+
+1. **Create a Discord webhook:**
+   - Open your Discord server
+   - Go to Server Settings → Integrations → Webhooks
+   - Click "New Webhook" or "Create Webhook"
+   - Customize the name and channel
+   - Copy the webhook URL
+
+2. **Add webhook URL to `.env` file:**
+   ```
+   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
+   ```
+
+3. **Enable in `config.json`:**
+   ```json
+   "discord": {
+     "enabled": true,
+     "notify_on_cleanup": true,
+     "notify_on_startup": true,
+     "notify_on_error": true
+   }
+   ```
+
+**Discord Configuration Options:**
+- `enabled`: Master switch for all Discord notifications (default: false)
+- `notify_on_cleanup`: Send notifications when recordings are deleted (default: true)
+- `notify_on_startup`: Send notification when script starts in continuous mode (default: true)
+- `notify_on_error`: Send notifications when errors occur (default: true)
+
+**Notification Types:**
+- **Startup** (purple): Script start with configuration summary
+- **Cleanup** (green): Per-show deletion details with episode list
+- **Summary** (blue): Total statistics after each cleanup cycle
+- **Error** (red): Connection failures, API errors, etc.
 
 ### Show Name Matching
 
@@ -220,6 +294,7 @@ Options:
   --once                Run cleanup once for all shows according to config, then exit
   --continuous          Run continuously in monitoring mode (default when no flags specified)
   --debug               Enable debug logging to see detailed API requests and responses
+  -v, --version         Show version number and exit
   -h, --help            Show help message and exit
 ```
 

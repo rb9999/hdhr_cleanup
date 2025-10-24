@@ -5,5 +5,11 @@
   "show_overrides": {
     "Example Show 1": 3,
     "Example Show 2": 7
+  },
+  "discord": {
+    "enabled": false,
+    "notify_on_cleanup": true,
+    "notify_on_startup": true,
+    "notify_on_error": true
   }
 }

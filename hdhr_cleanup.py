@@ -5,6 +5,8 @@ Keeps only the newest N recordings per show.
 Tested with SiliconDust HDHomeRun DVR API (recorded.json / recorded_delete).
 """
 
+__version__ = "2.0.0"
+
 import requests
 import time
 import logging
@@ -44,6 +46,7 @@ def load_config(config_path="config.json"):
     - default_episodes: Default number of episodes to keep
     - poll_interval_minutes: Minutes between cleanup runs
     - show_overrides: Dict of show name -> episode count
+    - discord: Discord notification settings
     """
     # Load environment variables from .env file
     load_dotenv()
@@ -54,7 +57,13 @@ def load_config(config_path="config.json"):
             "dvr_ip": DEFAULT_DVR_IP,
             "default_episodes": DEFAULT_MAX_EPISODES,
             "poll_interval_minutes": DEFAULT_POLL_INTERVAL_MINUTES,
-            "show_overrides": {}
+            "show_overrides": {},
+            "discord": {
+                "enabled": False,
+                "notify_on_cleanup": True,
+                "notify_on_startup": True,
+                "notify_on_error": True
+            }
         }
     else:
         try:
@@ -66,6 +75,12 @@ def load_config(config_path="config.json"):
             config.setdefault("default_episodes", DEFAULT_MAX_EPISODES)
             config.setdefault("poll_interval_minutes", DEFAULT_POLL_INTERVAL_MINUTES)
             config.setdefault("show_overrides", {})
+            config.setdefault("discord", {
+                "enabled": False,
+                "notify_on_cleanup": True,
+                "notify_on_startup": True,
+                "notify_on_error": True
+            })
 
             logging.info(f"Loaded config from {config_path}")
             logging.debug(f"Config: {config}")
@@ -77,7 +92,13 @@ def load_config(config_path="config.json"):
                 "dvr_ip": DEFAULT_DVR_IP,
                 "default_episodes": DEFAULT_MAX_EPISODES,
                 "poll_interval_minutes": DEFAULT_POLL_INTERVAL_MINUTES,
-                "show_overrides": {}
+                "show_overrides": {},
+                "discord": {
+                    "enabled": False,
+                    "notify_on_cleanup": True,
+                    "notify_on_startup": True,
+                    "notify_on_error": True
+                }
             }
 
     # Override dvr_ip with environment variable if present
@@ -87,6 +108,62 @@ def load_config(config_path="config.json"):
         logging.info(f"Using DVR_IP from environment: {env_dvr_ip}")
 
     return config
+
+
+def send_discord_notification(message, notification_type="info"):
+    """
+    Send a notification to Discord via webhook.
+
+    Args:
+        message: The message to send
+        notification_type: Type of notification (info, success, warning, error, startup)
+    """
+    discord_config = CONFIG.get("discord", {})
+
+    # Check if Discord notifications are enabled
+    if not discord_config.get("enabled", False):
+        return
+
+    # Check if this type of notification should be sent
+    if notification_type == "startup" and not discord_config.get("notify_on_startup", True):
+        return
+    if notification_type in ["info", "success", "warning"] and not discord_config.get("notify_on_cleanup", True):
+        return
+    if notification_type == "error" and not discord_config.get("notify_on_error", True):
+        return
+
+    # Get webhook URL from environment variable
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        logging.debug("Discord webhook URL not configured in .env file")
+        return
+
+    # Color codes for different notification types
+    color_map = {
+        "info": 0x3498db,      # Blue
+        "success": 0x2ecc71,   # Green
+        "warning": 0xf39c12,   # Orange
+        "error": 0xe74c3c,     # Red
+        "startup": 0x9b59b6    # Purple
+    }
+
+    color = color_map.get(notification_type, 0x95a5a6)  # Default gray
+
+    # Create embed payload
+    payload = {
+        "embeds": [{
+            "description": message,
+            "color": color,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        }]
+    }
+
+    try:
+        resp = requests.post(webhook_url, json=payload, timeout=5)
+        resp.raise_for_status()
+        logging.debug(f"Discord notification sent: {message[:50]}...")
+    except Exception as e:
+        logging.debug(f"Failed to send Discord notification: {e}")
 
 
 def get_recordings():
@@ -119,12 +196,20 @@ def get_recordings():
 
             except Exception as inner_e:
                 logging.warning(f"Failed to load episodes for {series_title}: {inner_e}")
+                send_discord_notification(
+                    f"⚠️ Failed to load episodes for **{series_title}**: {inner_e}",
+                    notification_type="error"
+                )
 
         logging.info(f"Found {len(all_episodes)} total episodes across {len(series_list)} series.")
         return all_episodes
 
     except Exception as e:
         logging.warning(f"Failed to get recordings: {e}")
+        send_discord_notification(
+            f"❌ Failed to get recordings from DVR: {e}",
+            notification_type="error"
+        )
         return []
 
 
@@ -219,6 +304,10 @@ def cleanup_all_shows(target_show=None, max_episodes=None):
         if not matching_shows:
             logging.error(f"No show found matching '{target_show}'")
             logging.info(f"Available shows: {', '.join(sorted(shows.keys()))}")
+            send_discord_notification(
+                f"❌ No show found matching **'{target_show}'**",
+                notification_type="error"
+            )
             return
 
         if len(matching_shows) > 1:
@@ -227,6 +316,10 @@ def cleanup_all_shows(target_show=None, max_episodes=None):
                 logging.info(f"  - {title}")
 
         shows = matching_shows
+
+    # Track cleanup statistics
+    total_deleted = 0
+    shows_cleaned = 0
 
     # Process each show
     for title, recs in shows.items():
@@ -247,13 +340,38 @@ def cleanup_all_shows(target_show=None, max_episodes=None):
             logging.debug(f"Recordings to delete: {[extract_recording_id(r) for r in to_delete]}")
 
             success_count = 0
+            deleted_episodes = []
             for r in to_delete:
-                if delete_recording(r, title, r.get("EpisodeTitle", "")):
+                episode_title = r.get("EpisodeTitle", "")
+                if delete_recording(r, title, episode_title):
                     success_count += 1
+                    deleted_episodes.append(episode_title)
 
             logging.info(f"Successfully deleted {success_count} of {len(to_delete)} recordings")
+
+            # Send Discord notification for this show
+            if success_count > 0:
+                shows_cleaned += 1
+                total_deleted += success_count
+
+                # Create a summary message
+                episodes_list = "\n".join([f"• {ep}" for ep in deleted_episodes[:5]])
+                if len(deleted_episodes) > 5:
+                    episodes_list += f"\n• ...and {len(deleted_episodes) - 5} more"
+
+                send_discord_notification(
+                    f"🗑️ **{title}**\nDeleted {success_count} of {len(to_delete)} recordings (keeping {show_max})\n\n{episodes_list}",
+                    notification_type="success"
+                )
         else:
             logging.debug(f"{title}: {len(recs)} recordings (no cleanup needed, keeping {show_max})")
+
+    # Send summary notification if any cleanups occurred
+    if total_deleted > 0:
+        send_discord_notification(
+            f"✅ **Cleanup Complete**\nProcessed {shows_cleaned} show(s)\nDeleted {total_deleted} recording(s)",
+            notification_type="info"
+        )
 
 def main():
     parser = argparse.ArgumentParser(
@@ -292,6 +410,12 @@ def main():
         "--debug",
         action="store_true",
         help="Enable debug logging to see API responses"
+    )
+    parser.add_argument(
+        "-v", "--version",
+        action="version",
+        version=f"HDHomeRun DVR Auto Cleanup v{__version__}",
+        help="Show version number and exit"
     )
 
     args = parser.parse_args()
@@ -350,12 +474,18 @@ def main():
 
     if args.max_episodes:
         logging.info(f"Starting HDHomeRun cleanup script (keeping {args.max_episodes} per show, overriding config)")
+        startup_msg = f"🚀 **HDHomeRun Cleanup Started**\nMode: Continuous monitoring\nKeeping: {args.max_episodes} episodes per show (override)\nPoll interval: {poll_interval_minutes} minute(s)"
     else:
         logging.info(f"Starting HDHomeRun cleanup script (default: {default_max} per show)")
         if CONFIG.get("show_overrides"):
             logging.info(f"Show overrides configured: {list(CONFIG['show_overrides'].keys())}")
+            overrides_text = "\n".join([f"• {show}: {count}" for show, count in CONFIG['show_overrides'].items()])
+            startup_msg = f"🚀 **HDHomeRun Cleanup Started**\nMode: Continuous monitoring\nDefault: {default_max} episodes per show\nPoll interval: {poll_interval_minutes} minute(s)\n\n**Show Overrides:**\n{overrides_text}"
+        else:
+            startup_msg = f"🚀 **HDHomeRun Cleanup Started**\nMode: Continuous monitoring\nKeeping: {default_max} episodes per show\nPoll interval: {poll_interval_minutes} minute(s)"
 
     logging.info(f"Polling every {poll_interval_minutes} minute(s)")
+    send_discord_notification(startup_msg, notification_type="startup")
 
     while True:
         cleanup_all_shows(max_episodes=args.max_episodes)
