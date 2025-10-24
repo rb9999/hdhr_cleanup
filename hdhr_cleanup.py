@@ -366,10 +366,15 @@ def cleanup_all_shows(target_show=None, max_episodes=None):
         else:
             logging.debug(f"{title}: {len(recs)} recordings (no cleanup needed, keeping {show_max})")
 
-    # Send summary notification if any cleanups occurred
+    # Send summary notification after cleanup (always send, even if nothing deleted)
     if total_deleted > 0:
         send_discord_notification(
             f"✅ **Cleanup Complete**\nProcessed {shows_cleaned} show(s)\nDeleted {total_deleted} recording(s)",
+            notification_type="info"
+        )
+    else:
+        send_discord_notification(
+            f"✅ **Cleanup Complete**\nNo recordings needed deletion\nAll shows within retention limits",
             notification_type="info"
         )
 
